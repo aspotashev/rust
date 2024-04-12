@@ -898,7 +898,6 @@ fn should_sort_failures_before_printing_them() {
     let mut out = PrettyFormatter::new(&mut raw, false, 10, false, None);
 
     let st = console::ConsoleTestState {
-        log_out: None,
         total: 0,
         passed: 0,
         failed: 0,
@@ -1033,5 +1032,15 @@ fn test_logfile_format() {
     // Split output at line breaks to make the comparison platform-agnostic regarding newline style.
     let contents_lines = contents.as_str().lines().collect::<Vec<&str>>();
 
-    assert_eq!(contents_lines, vec!["ok whatever"]);
+    assert_eq!(
+        contents_lines,
+        vec![
+            "",
+            "running 1 test",
+            "test whatever ... ok",
+            "",
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+            ""
+        ]
+    );
 }

@@ -8,7 +8,6 @@ use std::time::Instant;
 use std::vec;
 
 use super::{
-    bench::fmt_bench_samples,
     cli::TestOpts,
     event::{CompletedTest, TestEvent},
     filter_tests,
@@ -17,7 +16,7 @@ use super::{
     options::{Options, OutputFormat},
     run_tests, term,
     test_result::TestResult,
-    time::{TestExecTime, TestSuiteExecTime},
+    time::TestSuiteExecTime,
     types::{NamePadding, TestDesc, TestDescAndFn},
 };
 
@@ -132,7 +131,6 @@ impl ConsoleTestDiscoveryState {
 }
 
 pub struct ConsoleTestState {
-    pub log_out: Option<File>,
     pub total: usize,
     pub passed: usize,
     pub failed: usize,
@@ -150,13 +148,7 @@ pub struct ConsoleTestState {
 
 impl ConsoleTestState {
     pub fn new(opts: &TestOpts) -> io::Result<ConsoleTestState> {
-        let log_out = match opts.logfile {
-            Some(ref path) => Some(File::create(path)?),
-            None => None,
-        };
-
         Ok(ConsoleTestState {
-            log_out,
             total: 0,
             passed: 0,
             failed: 0,
@@ -171,54 +163,6 @@ impl ConsoleTestState {
             time_failures: Vec::new(),
             options: opts.options,
         })
-    }
-
-    pub fn write_log<F, S>(&mut self, msg: F) -> io::Result<()>
-    where
-        S: AsRef<str>,
-        F: FnOnce() -> S,
-    {
-        match self.log_out {
-            None => Ok(()),
-            Some(ref mut o) => {
-                let msg = msg();
-                let msg = msg.as_ref();
-                o.write_all(msg.as_bytes())
-            }
-        }
-    }
-
-    pub fn write_log_result(
-        &mut self,
-        test: &TestDesc,
-        result: &TestResult,
-        exec_time: Option<&TestExecTime>,
-    ) -> io::Result<()> {
-        self.write_log(|| {
-            let TestDesc { name, ignore_message, .. } = test;
-            format!(
-                "{} {}",
-                match *result {
-                    TestResult::TrOk => "ok".to_owned(),
-                    TestResult::TrFailed => "failed".to_owned(),
-                    TestResult::TrFailedMsg(ref msg) => format!("failed: {msg}"),
-                    TestResult::TrIgnored => {
-                        if let Some(msg) = ignore_message {
-                            format!("ignored: {msg}")
-                        } else {
-                            "ignored".to_owned()
-                        }
-                    }
-                    TestResult::TrBench(ref bs) => fmt_bench_samples(bs),
-                    TestResult::TrTimedFail => "failed (time limit exceeded)".to_owned(),
-                },
-                name,
-            )
-        })?;
-        if let Some(exec_time) = exec_time {
-            self.write_log(|| format!(" <{exec_time}>"))?;
-        }
-        self.write_log(|| "\n")
     }
 
     fn current_test_count(&self) -> usize {
@@ -325,7 +269,6 @@ fn on_test_event(
             let exec_time = &completed_test.exec_time;
             let stdout = &completed_test.stdout;
 
-            st.write_log_result(test, result, exec_time.as_ref())?;
             out.write_result(test, result, exec_time.as_ref(), stdout, st)?;
             handle_test_result(st, completed_test);
         }
@@ -337,11 +280,6 @@ fn on_test_event(
 /// A simple console test runner.
 /// Runs provided tests reporting process and results to the stdout.
 pub fn run_tests_console(opts: &TestOpts, tests: Vec<TestDescAndFn>) -> io::Result<bool> {
-    let mut output = match term::stdout() {
-        None => OutputLocation::Raw(io::stdout()),
-        Some(t) => OutputLocation::Pretty(t),
-    };
-
     let max_name_len = tests
         .iter()
         .max_by_key(|t| len_if_padded(t))
@@ -350,23 +288,25 @@ pub fn run_tests_console(opts: &TestOpts, tests: Vec<TestDescAndFn>) -> io::Resu
 
     let is_multithreaded = opts.test_threads.unwrap_or_else(get_concurrency) > 1;
 
+    let mut multiplexer = OutputMultiplexer::new(false, &opts.logfile)?;
     let mut out: Box<dyn OutputFormatter> = match opts.format {
         OutputFormat::Pretty => Box::new(PrettyFormatter::new(
-            &mut output,
+            &mut multiplexer,
             opts.use_color(),
             max_name_len,
             is_multithreaded,
             opts.time_options,
         )),
         OutputFormat::Terse => Box::new(TerseFormatter::new(
-            &mut output,
+            &mut multiplexer,
             opts.use_color(),
             max_name_len,
             is_multithreaded,
         )),
-        OutputFormat::Json => Box::new(JsonFormatter::new(&mut output)),
-        OutputFormat::Junit => Box::new(JunitFormatter::new(&mut output)),
+        OutputFormat::Json => Box::new(JsonFormatter::new(&mut multiplexer)),
+        OutputFormat::Junit => Box::new(JunitFormatter::new(&mut multiplexer)),
     };
+
     let mut st = ConsoleTestState::new(opts)?;
 
     // Prevent the usage of `Instant` in some cases:
